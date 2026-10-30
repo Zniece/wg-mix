@@ -8,6 +8,8 @@ package device
 import (
 	"crypto/hmac"
 	"crypto/rand"
+	"encoding/binary"
+	"hash"
 	"sync"
 	"time"
 
@@ -66,6 +68,25 @@ func (st *CookieChecker) Init(pk NoisePublicKey) {
 	st.mac2.secretSet = time.Time{}
 }
 
+// Hash the canonical type followed by the rest of the MAC input.
+func writeMACInput(mac hash.Hash, msg []byte, end int) {
+	t := binary.LittleEndian.Uint32(msg)
+	switch t {
+	case MessageInitiationType:
+		t = 1
+	case MessageResponseType:
+		t = 2
+	case MessageCookieReplyType:
+		t = 3
+	case MessageTransportType:
+		t = 4
+	}
+	var hdr [4]byte
+	binary.LittleEndian.PutUint32(hdr[:], t)
+	mac.Write(hdr[:])
+	mac.Write(msg[4:end])
+}
+
 func (st *CookieChecker) CheckMAC1(msg []byte) bool {
 	st.RLock()
 	defer st.RUnlock()
@@ -77,7 +98,7 @@ func (st *CookieChecker) CheckMAC1(msg []byte) bool {
 	var mac1 [blake2s.Size128]byte
 
 	mac, _ := blake2s.New128(st.mac1.key[:])
-	mac.Write(msg[:smac1])
+	writeMACInput(mac, msg, smac1)
 	mac.Sum(mac1[:0])
 
 	return hmac.Equal(mac1[:], msg[smac1:smac2])
@@ -107,7 +128,7 @@ func (st *CookieChecker) CheckMAC2(msg, src []byte) bool {
 	var mac2 [blake2s.Size128]byte
 	func() {
 		mac, _ := blake2s.New128(cookie[:])
-		mac.Write(msg[:smac2])
+		writeMACInput(mac, msg, smac2)
 		mac.Sum(mac2[:0])
 	}()
 
@@ -228,7 +249,7 @@ func (st *CookieGenerator) AddMacs(msg []byte) {
 
 	func() {
 		mac, _ := blake2s.New128(st.mac1.key[:])
-		mac.Write(msg[:smac1])
+		writeMACInput(mac, msg, smac1)
 		mac.Sum(mac1[:0])
 	}()
 	copy(st.mac2.lastMAC1[:], mac1)
@@ -242,7 +263,7 @@ func (st *CookieGenerator) AddMacs(msg []byte) {
 
 	func() {
 		mac, _ := blake2s.New128(st.mac2.cookie[:])
-		mac.Write(msg[:smac2])
+		writeMACInput(mac, msg, smac2)
 		mac.Sum(mac2[:0])
 	}()
 }

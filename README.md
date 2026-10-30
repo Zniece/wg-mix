@@ -1,18 +1,21 @@
-# wireguard-mix
+# wg-mix
 
 基于 wireguard-go,做了一些小修改，规避防火墙的检测。
 
 暂时只做了一点点改动，但是满足需求了
 
 - 修改 Type 为随机 uint32 (暂时是静态的)
+- MAC1/MAC2 按 canonical Type（1/2/3/4）计算，用于和 `wgmix-ebpf` 互通
 
 ## 构建
 
-需要 golang 1.20+
+需要 golang 1.20+；构建 eBPF 部分还需要 clang。
 
 ```bash
-go build -o wireguard-mix
+make            # 同时生成 wgmix 和 wgmix-ebpf
 ```
+
+`wgmix` 是用户态实现，`wgmix-ebpf` 是内核 WireGuard + TC/XDP 实现，源码在 `ebpf/`。
 
 ### 跨平台编译
 
@@ -26,16 +29,16 @@ Go 原生支持跨平台编译，通过设置 `GOOS` 和 `GOARCH` 环境变量�
 
 ```bash
 # Linux amd64
-GOOS=linux GOARCH=amd64 go build -o wireguard-mix-linux-amd64
+GOOS=linux GOARCH=amd64 go build -o wgmix-linux-amd64
 
 # macOS arm64 (Apple Silicon)
-GOOS=darwin GOARCH=arm64 go build -o wireguard-mix-macos-arm64
+GOOS=darwin GOARCH=arm64 go build -o wgmix-macos-arm64
 
 # FreeBSD amd64
-GOOS=freebsd GOARCH=amd64 go build -o wireguard-mix-freebsd-amd64
+GOOS=freebsd GOARCH=amd64 go build -o wgmix-freebsd-amd64
 
 # Linux mipsel (软路由常用)
-GOOS=linux GOARCH=mipsle GOMIPS=softfloat go build -o wireguard-mix-linux-mipsel
+GOOS=linux GOARCH=mipsle GOMIPS=softfloat go build -o wgmix-linux-mipsel
 ```
 
 ## 用法
@@ -43,7 +46,7 @@ GOOS=linux GOARCH=mipsle GOMIPS=softfloat go build -o wireguard-mix-linux-mipsel
 这样子开接口：
 
 ```bash
-wireguard-mix wg0
+wgmix wg0
 ```
 
 然后就可以用 [`wg(8)`](https://git.zx2c4.com/wireguard-tools/about/src/man/wg.8)，`ip(8)` 和`ifconfig(8)` 配置了
@@ -58,7 +61,7 @@ wireguard-mix wg0
 sudo apt update
 sudo apt install -y wireguard-tools
 sudo mv /usr/bin/wg-quick /usr/bin/wg-quick.bak
-sudo cp wireguard-mix/wg-quick /usr/bin/wg-quick
+sudo cp wg-quick /usr/bin/wg-quick
 sudo chmod +x /usr/bin/wg-quick
 ```
 
@@ -68,13 +71,25 @@ sudo chmod +x /usr/bin/wg-quick
 [Interface]
 ListenPort = port
 PrivateKey = PrivateKey 
-WgBin = wireguard-mix
+WgBin = wgmix
 ```
 
 WgBin 可以直接填写路径，也这样写先丢到 path 里去再玩
 
 ```bash
-sudo cp wireguard-mix /usr/local/bin/
+sudo cp wgmix /usr/local/bin/
+```
+
+## wgmix-ebpf
+
+内核 WireGuard + TC/XDP 的实现位于 `ebpf/`，构建产物是 `wgmix-ebpf`。
+它不改内核模块，只改写线上 4 字节 Type；用法和约束见 [`ebpf/README.md`](ebpf/README.md)。
+
+```ini
+[Interface]
+ListenPort = 51820
+PrivateKey = ...
+WgBin = wgmix-ebpf
 ```
 
 ## wireguard-go 的 License

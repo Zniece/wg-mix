@@ -1,2 +1,6 @@
 wireguard-go
+/wgmix
+/wgmix-ebpf
+/wireguard-mix
+/wireguard-mix-linux
 .idea/workspace.xml

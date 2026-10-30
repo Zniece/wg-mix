@@ -12,6 +12,7 @@ SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 export PATH="${SELF%/*}:$PATH"
 
 WG_BIN=""
+WG_EBPF=""
 WG_CONFIG=""
 INTERFACE=""
 ADDRESSES=( )
@@ -68,7 +69,13 @@ parse_options() {
 			PostUp) POST_UP+=( "$unstripped_value" ); continue ;;
 			PostDown) POST_DOWN+=( "$unstripped_value" ); continue ;;
 			SaveConfig) read_bool SAVE_CONFIG "$value"; continue ;;
-			WgBin) echo "[#] WgBin parameter detected: $value" >&2; WG_BIN="$value"; export WG_QUICK_USERSPACE_IMPLEMENTATION="$WG_BIN"; continue ;;
+			WgBin) WG_BIN="$value"
+				if [[ ${WG_BIN##*/} == wgmix-ebpf || ${WG_BIN##*/} == wg-mix-ebpf ]]; then
+					WG_EBPF="$WG_BIN"; WG_BIN=""
+				else
+					export WG_QUICK_USERSPACE_IMPLEMENTATION="$WG_BIN"
+				fi
+				continue ;;
 			esac
 		fi
 		WG_CONFIG+="$line"$'\n'
@@ -90,6 +97,10 @@ auto_su() {
 
 add_if() {
 	local ret
+	if [[ -n $WG_EBPF ]]; then
+		cmd ip link add dev "$INTERFACE" type wireguard || die "eBPF mode requires kernel WireGuard"
+		return
+	fi
 	# If WgBin is set, force userspace implementation
 	if [[ -n "$WG_BIN" ]]; then
 		echo "[#] Using userspace implementation: $WG_BIN" >&2
@@ -327,17 +338,63 @@ cmd_usage() {
 	    to configure DNS. The string \`%i' is expanded to INTERFACE.
 	  - SaveConfig: if set to \`true', the configuration is saved from the current
 	    state of the interface upon shutdown.
-	  - WgBin: an optional userspace WireGuard implementation to use when the
-	    kernel module is not available; defaults to \`wireguard-go'.
+	  - WgBin: userspace WireGuard implementation, or \`wgmix-ebpf' for
+	    kernel WireGuard + eBPF.
 
 	See wg-quick(8) for more info and examples.
 	_EOF
 }
 
+ebpf_wan_if() {
+	local out endpoint
+	while read -r _ endpoint; do
+		[[ $endpoint =~ ^\[?([0-9a-fA-F:.]+)\]?:[0-9]+$ ]] || continue
+		out="$(ip route get "${BASH_REMATCH[1]}" 2>/dev/null)" || continue
+		[[ $out =~ dev\ ([^ ]+) ]] && { echo "${BASH_REMATCH[1]}"; return 0; }
+		break
+	done < <(wg show "$INTERFACE" endpoints 2>/dev/null)
+	out="$(ip route show default 2>/dev/null | head -n1)"
+	[[ $out =~ dev\ ([^ ]+) ]] && echo "${BASH_REMATCH[1]}"
+}
+
+ebpf_attach() {
+	[[ -n $WG_EBPF ]] || return 0
+	local listen_port endpoint wan_if
+	local -a ports=( )
+	grep -q ' /sys/fs/bpf bpf ' /proc/mounts || {
+		cmd mkdir -p /sys/fs/bpf
+		cmd mount -t bpf bpf /sys/fs/bpf || die "eBPF mode: cannot mount bpffs"
+	}
+	listen_port="$(wg show "$INTERFACE" listen-port 2>/dev/null)" || die "eBPF mode: cannot read ListenPort"
+	[[ $listen_port =~ ^[0-9]+$ ]] || die "eBPF mode: invalid ListenPort"
+	while read -r _ endpoint; do
+		[[ $endpoint =~ ^\[?([0-9a-fA-F:.]+)\]?:([0-9]+)$ ]] || continue
+		ports+=( "${BASH_REMATCH[2]}" )
+	done < <(wg show "$INTERFACE" endpoints)
+	(( listen_port > 0 || ${#ports[@]} > 0 )) || die "eBPF mode: need ListenPort or peer Endpoint"
+	wan_if="$(ebpf_wan_if)" || die "eBPF mode: cannot determine egress interface"
+	local peer_ports
+	local IFS=,
+	peer_ports="${ports[*]}"
+	IFS=$' \t\n'
+	local args=( attach -iface "$wan_if" )
+	(( listen_port > 0 )) && args+=( -listen "$listen_port" )
+	[[ -n $peer_ports ]] && args+=( -peer "$peer_ports" )
+	args+=( -wire "4133012198,109490640,123397600,333443179" -xdp "${WG_MIX_XDP:-native}" )
+	cmd "$WG_EBPF" "${args[@]}" || die "eBPF attach failed"
+}
+
+ebpf_detach() {
+	[[ -n $WG_EBPF ]] || return 0
+	local wan_if
+	wan_if="$(ebpf_wan_if)" || return 0
+	cmd "$WG_EBPF" detach -iface "$wan_if" || true
+}
+
 cmd_up() {
 	local i
 	[[ -z $(ip link show dev "$INTERFACE" 2>/dev/null) ]] || die "\`$INTERFACE' already exists"
-	trap 'del_if; exit' INT TERM EXIT
+	trap 'ebpf_detach; del_if; exit' INT TERM EXIT
 	add_if
 	execute_hooks "${PRE_UP[@]}"
 	set_config
@@ -349,6 +406,7 @@ cmd_up() {
 	for i in $(while read -r _ i; do for i in $i; do [[ $i =~ ^[0-9a-z:.]+/[0-9]+$ ]] && echo "$i"; done; done < <(wg show "$INTERFACE" allowed-ips) | sort -nr -k 2 -t /); do
 		add_route "$i"
 	done
+	ebpf_attach
 	execute_hooks "${POST_UP[@]}"
 	trap - INT TERM EXIT
 }
@@ -356,6 +414,7 @@ cmd_up() {
 cmd_down() {
 	[[ " $(wg show interfaces) " == *" $INTERFACE "* ]] || die "\`$INTERFACE' is not a WireGuard interface"
 	execute_hooks "${PRE_DOWN[@]}"
+	ebpf_detach
 	[[ $SAVE_CONFIG -eq 0 ]] || save_config
 	del_if
 	unset_dns || true

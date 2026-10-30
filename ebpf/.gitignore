@@ -1,0 +1,10 @@
+# 构建产物
+/wgmix-ebpf
+*.exe
+
+# eBPF 对象（make bpf 生成）
+/bpf/*.o
+
+# 测试临时文件
+*.test
+/coverage.out

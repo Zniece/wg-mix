@@ -3,7 +3,7 @@ DESTDIR ?=
 BINDIR ?= $(PREFIX)/bin
 export GO111MODULE := on
 
-all: generate-version-and-build
+all: generate-version-and-build wgmix-ebpf
 
 MAKEFLAGS += --no-print-directory
 
@@ -14,18 +14,25 @@ generate-version-and-build:
 	[ "$$(cat version.go 2>/dev/null)" != "$$ver" ] && \
 	echo "$$ver" > version.go && \
 	git update-index --assume-unchanged version.go || true
-	@$(MAKE) wireguard-go
+	@$(MAKE) wgmix
 
-wireguard-mix: $(wildcard *.go) $(wildcard */*.go)
+wgmix: $(wildcard *.go) $(wildcard */*.go)
 	go build -v -o "$@"
 
-install: wireguard-mix
-	@install -v -d "$(DESTDIR)$(BINDIR)" && install -v -m 0755 "$<" "$(DESTDIR)$(BINDIR)/wireguard-mix"
+wgmix-ebpf:
+	@$(MAKE) -C ebpf BIN=wgmix-ebpf
+
+install: wgmix wgmix-ebpf
+	@install -v -d "$(DESTDIR)$(BINDIR)" && \
+	install -v -m 0755 wgmix "$(DESTDIR)$(BINDIR)/wgmix" && \
+	install -v -m 0755 ebpf/wgmix-ebpf "$(DESTDIR)$(BINDIR)/wgmix-ebpf"
 
 test:
 	go test ./...
+	@$(MAKE) -C ebpf test
 
 clean:
-	rm -f wireguard-mix
+	rm -f wgmix wireguard-mix
+	@$(MAKE) -C ebpf clean
 
-.PHONY: all clean test install generate-version-and-build
+.PHONY: all clean test install generate-version-and-build wgmix wgmix-ebpf

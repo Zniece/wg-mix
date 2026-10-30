@@ -6,8 +6,36 @@
 package device
 
 import (
+	"encoding/binary"
 	"testing"
 )
+
+func TestCanonicalMAC(t *testing.T) {
+	var generator CookieGenerator
+	var checker CookieChecker
+
+	sk, err := newPrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pk := sk.publicKey()
+	generator.Init(pk)
+	checker.Init(pk)
+
+	msg := make([]byte, MessageInitiationSize)
+	for i := range msg {
+		msg[i] = byte(i * 3)
+	}
+	binary.LittleEndian.PutUint32(msg, MessageInitiationType)
+	generator.AddMacs(msg)
+	if !checker.CheckMAC1(msg) {
+		t.Fatal("wire type")
+	}
+	binary.LittleEndian.PutUint32(msg, 1)
+	if !checker.CheckMAC1(msg) {
+		t.Fatal("canonical type")
+	}
+}
 
 func TestCookieMAC1(t *testing.T) {
 	// setup generator / checker
