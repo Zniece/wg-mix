@@ -382,13 +382,29 @@ ebpf_attach() {
 	[[ -n $peer_ports ]] && args+=( -peer "$peer_ports" )
 	args+=( -wire "4133012198,109490640,123397600,333443179" -xdp "${WG_MIX_XDP:-native}" )
 	cmd "$WG_EBPF" "${args[@]}" || die "eBPF attach failed"
+	printf '%s\n' "$wan_if" > "/run/wg-quick-ebpf-$INTERFACE"
 }
 
 ebpf_detach() {
 	[[ -n $WG_EBPF ]] || return 0
-	local wan_if
-	wan_if="$(ebpf_wan_if)" || return 0
-	cmd "$WG_EBPF" detach -iface "$wan_if" || true
+	local wan_if=""
+	if [[ -f /run/wg-quick-ebpf-$INTERFACE ]]; then
+		read -r wan_if < "/run/wg-quick-ebpf-$INTERFACE"
+	fi
+	if [[ -z $wan_if ]]; then
+		wan_if="$(ebpf_wan_if)" || return 0
+	fi
+	if cmd "$WG_EBPF" detach -iface "$wan_if"; then
+		rm -f "/run/wg-quick-ebpf-$INTERFACE"
+		return 0
+	fi
+	echo "[!] eBPF detach failed on $wan_if, retrying" >&2
+	if cmd "$WG_EBPF" detach -iface "$wan_if"; then
+		rm -f "/run/wg-quick-ebpf-$INTERFACE"
+		return 0
+	fi
+	echo "[!] eBPF detach retry failed on $wan_if" >&2
+	return 0
 }
 
 cmd_up() {
@@ -398,6 +414,7 @@ cmd_up() {
 	add_if
 	execute_hooks "${PRE_UP[@]}"
 	set_config
+	ebpf_attach
 	for i in "${ADDRESSES[@]}"; do
 		add_addr "$i"
 	done
@@ -406,7 +423,6 @@ cmd_up() {
 	for i in $(while read -r _ i; do for i in $i; do [[ $i =~ ^[0-9a-z:.]+/[0-9]+$ ]] && echo "$i"; done; done < <(wg show "$INTERFACE" allowed-ips) | sort -nr -k 2 -t /); do
 		add_route "$i"
 	done
-	ebpf_attach
 	execute_hooks "${POST_UP[@]}"
 	trap - INT TERM EXIT
 }
