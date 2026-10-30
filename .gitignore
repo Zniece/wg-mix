@@ -4,3 +4,4 @@ wireguard-go
 /wireguard-mix
 /wireguard-mix-linux
 .idea/workspace.xml
+/dist/
