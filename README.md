@@ -17,6 +17,9 @@ make            # 同时生成 wgmix 和 wgmix-ebpf
 
 `wgmix` 是用户态实现，`wgmix-ebpf` 是内核 WireGuard + TC/XDP 实现，源码在 `ebpf/`。
 
+推送 `v*` tag 会构建 Linux amd64、arm64、armv7 三个版本，每个压缩包同时包含
+`wgmix`、`wgmix-ebpf` 和 `wg-quick`。
+
 ### 跨平台编译
 
 Go 原生支持跨平台编译，通过设置 `GOOS` 和 `GOARCH` 环境变量即可。
